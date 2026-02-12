@@ -47,11 +47,19 @@
     </ItemGroup>
     <ItemGroup>
         <Compile Include="BusMod.cs" />
+        <Compile Include="Constants.cs" />
         <Compile Include="Mission.cs" />
         <Compile Include="Properties\AssemblyInfo.cs"/>
+        <Compile Include="Services\PedestrianManager.cs" />
+        <Compile Include="Services\XmlMissionDataService.cs" />
     </ItemGroup>
     <ItemGroup>
       <None Include="packages.config" />
+    </ItemGroup>
+    <ItemGroup>
+      <Content Include="..\Readme.md">
+        <Link>Readme.md</Link>
+      </Content>
     </ItemGroup>
     <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets"/>
     <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 

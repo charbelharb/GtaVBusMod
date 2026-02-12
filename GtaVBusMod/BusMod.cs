@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Xml;
@@ -10,137 +9,195 @@ using LemonUI.Menus;
 
 namespace GtaVBusMod
 {
+    /// <summary>
+    /// Main script class for the GTA V Bus Mod. Handles menu initialization, 
+    /// user input, and mission lifecycle management.
+    /// </summary>
     public class BusMod : Script
     {
-        private readonly List<string> _missionName = new List<string>();
-        private NativeMenu main_m;
+        #region Fields
+
+        private readonly List<string> _missionNames = new List<string>();
+        private NativeMenu _mainMenu;
         private readonly ObjectPool _menuPool = new ObjectPool();
-        private  bool _lock;
-        private string _keycode = string.Empty;
-        private Mission _mission = new Mission();
+        private bool _isMissionActive;
+        private string _keyCode = string.Empty;
+        private readonly Mission _mission = new Mission();
         private int _currentMissionIndex = 0;
 
+        #endregion
+
+        #region Constructor
+
+        /// <summary>
+        /// Initializes a new instance of the BusMod script.
+        /// Sets up event handlers for menu processing and key inputs.
+        /// </summary>
         public BusMod()
         {
             Interval = 0;
             GTA.UI.Notification.Show("Bus mod loaded - scorz");
-            Tick += (o, e) => {
-               
+
+            // Process menu pool and mission state on each tick
+            Tick += (o, e) =>
+            {
                 _menuPool.Process();
-                if (_lock)
+                if (_isMissionActive)
                 {
-                    _lock = _mission.Check();
-                };
+                    _isMissionActive = _mission.Check();
+                }
             };
 
+            // Handle key input for menu toggle
             KeyDown += (o, e) =>
             {
-                if (e.KeyCode.ToString() == GetKey() && !_menuPool.AreAnyVisible)
+                if (e.KeyCode.ToString() == GetActivationKey() && !_menuPool.AreAnyVisible)
                 {
-                    StartMainMenu();
+                    ShowMainMenu();
                 }
             };
         }
-        
-        private List<string> GetMissionName()
+
+        #endregion
+
+        #region Mission Loading
+
+        /// <summary>
+        /// Retrieves the list of available mission names from the XML configuration file.
+        /// Caches the result to avoid repeated file reads.
+        /// </summary>
+        /// <returns>List of mission names</returns>
+        private List<string> GetMissionNames()
         {
-            if (_missionName.Count > 0)
+            if (_missionNames.Count > 0)
             {
-                return _missionName;
-            }
-            try
-            {
-                const string path = @"scripts\\bus_mod_missions.xml";
-                using (var fS = new FileStream(path, FileMode.Open, FileAccess.Read))
-                {
-                    var xmlDoc = new XmlDocument();
-                    xmlDoc.Load(fS);
-                    var nList = xmlDoc.SelectNodes("/missions/element/name");
-                    _missionName.AddRange(from XmlNode node in nList select node.InnerText);
-                    fS.Close();
-                }
-            } 
-            catch (Exception e)
-            {
-                GTA.UI.Screen.ShowSubtitle(e.Message);
+                return _missionNames;
             }
 
-            return _missionName;
-        }
-        
-        private string GetKey()
-        {
-            if (!string.IsNullOrWhiteSpace(_keycode))
-            {
-                return _keycode;
-            }
-            var split = new string[] { };
-            const string path = @"scripts\\bus_mod.ini";
             try
             {
-                using (var r = new StreamReader(path))
+                const string missionFilePath = @"scripts\bus_mod_missions.xml";
+                using (var fileStream = new FileStream(missionFilePath, FileMode.Open, FileAccess.Read))
                 {
-                    var key = r.ReadLine();
-                    split = key?.Split('=');
-                    r.Close();
+                    var xmlDoc = new XmlDocument();
+                    xmlDoc.Load(fileStream);
+                    var missionNodes = xmlDoc.SelectNodes("/missions/element/name");
+
+                    if (missionNodes != null)
+                    {
+                        _missionNames.AddRange(from XmlNode node in missionNodes select node.InnerText);
+                    }
                 }
             }
-            catch (Exception e)
+            catch (Exception ex)
             {
-                GTA.UI.Screen.ShowSubtitle(e.Message);
+                GTA.UI.Screen.ShowSubtitle($"Error loading missions: {ex.Message}");
             }
-            _keycode = split?[1];
-            return _keycode;
+
+            return _missionNames;
         }
-        
-        // Returning first mission
-        private string get_first_child()
+
+        #endregion
+
+        #region Configuration
+
+        /// <summary>
+        /// Reads the activation key from the INI configuration file.
+        /// Expected format: Key=KeyCode
+        /// </summary>
+        /// <returns>The key code string to activate the menu</returns>
+        private string GetActivationKey()
         {
-            return GetMissionName()[0];
-        }
-        
-        private void StartMainMenu()
-        {
-            main_m = new NativeMenu("", "Bus mod by scorz");
-            _menuPool.Add(main_m);
-            var missionName = GetMissionName();
-            var startBut = new NativeItem("Start", "Click to start mission.");
-            main_m.BannerText.Text = "Dashound Bus Center";
-            main_m.Add(startBut);
-            startBut.Activated += (sender, args) =>
+            if (!string.IsNullOrWhiteSpace(_keyCode))
             {
-                _lock = true;
+                return _keyCode;
+            }
+
+            const string configFilePath = @"scripts\bus_mod.ini";
+            try
+            {
+                using (var reader = new StreamReader(configFilePath))
+                {
+                    var configLine = reader.ReadLine();
+                    var keyValuePair = configLine?.Split('=');
+
+                    if (keyValuePair != null && keyValuePair.Length > 1)
+                    {
+                        _keyCode = keyValuePair[1];
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                GTA.UI.Screen.ShowSubtitle($"Error loading config: {ex.Message}");
+            }
+
+            return _keyCode;
+        }
+
+        #endregion
+
+        #region Menu Management
+
+        /// <summary>
+        /// Creates and displays the main menu for mission selection and control.
+        /// Provides options to start missions, select from mission list, and cancel active missions.
+        /// </summary>
+        private void ShowMainMenu()
+        {
+            _mainMenu = new NativeMenu("", "Bus mod by scorz")
+            {
+                BannerText = { Text = "Dashound Bus Center" }
+            };
+            _menuPool.Add(_mainMenu);
+
+            var missionNames = GetMissionNames();
+
+            // Start Mission Button
+            var startButton = new NativeItem("Start", "Click to start the selected mission.");
+            _mainMenu.Add(startButton);
+            startButton.Activated += (sender, args) =>
+            {
+                _isMissionActive = true;
                 _menuPool.HideAll();
-                _mission.PrepareMission(_missionName[_currentMissionIndex]);
+                _mission.PrepareMission(_missionNames[_currentMissionIndex]);
             };
-            var missionList = new NativeListItem<string>("Missions List",  "Choose mission")
+
+            // Mission List Dropdown
+            var missionListItem = new NativeListItem<string>("Missions List", "Choose a mission to play")
             {
-                Items = missionName
+                Items = missionNames
             };
-            main_m.Add(missionList);
-            missionList.ItemChanged += (sender, args) =>
+            _mainMenu.Add(missionListItem);
+            missionListItem.ItemChanged += (sender, args) =>
             {
                 _currentMissionIndex = args.Index;
             };
-            var cancel = new NativeItem("Cancel", "Cancel current mission")
+
+            // Cancel Mission Button
+            var cancelButton = new NativeItem("Cancel", "Cancel the currently active mission")
             {
                 Enabled = false
             };
-            main_m.Add(cancel);
-            cancel.Activated += (sender, args) =>
+            _mainMenu.Add(cancelButton);
+            cancelButton.Activated += (sender, args) =>
             {
                 _menuPool.HideAll();
                 _mission.CancelMission();
-                _lock = false;
+                _isMissionActive = false;
             };
-            if (_lock)
+
+            // Update menu item states based on mission status
+            if (_isMissionActive)
             {
-                startBut.Enabled = false;
-                missionList.Enabled = false;
-                cancel.Enabled = true;
+                startButton.Enabled = false;
+                missionListItem.Enabled = false;
+                cancelButton.Enabled = true;
             }
-            main_m.Visible = !main_m.Visible;
+
+            _mainMenu.Visible = !_mainMenu.Visible;
         }
-       
+
+        #endregion
     }
 }

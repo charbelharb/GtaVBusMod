@@ -1,441 +1,329 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
 using System.Linq;
-using System.Xml;
 using GTA;
 using GTA.Math;
+using GtaVBusMod.Services;
 
 namespace GtaVBusMod
 {
+    /// <summary>
+    /// Manages the lifecycle and logic of a bus mission, including passenger pickup,
+    /// transportation, and delivery to destination.
+    /// </summary>
     public class Mission
     {
-        private readonly XmlDocument _xml = new XmlDocument();
+        #region Fields
 
-        public Mission()
+        private readonly PedestrianManager _pedestrianManager = new PedestrianManager();
+        private XmlMissionDataService _missionData;
+        private Blip _destinationBlip;
+        private Vehicle _busVehicle;
+
+        #endregion
+
+        #region Mission Lifecycle
+
+        /// <summary>
+        /// Prepares and starts a new mission by loading mission data, spawning entities,
+        /// and initializing game state.
+        /// </summary>
+        /// <param name="missionName">Name of the mission to start</param>
+        public void PrepareMission(string missionName)
         {
-            try
-            {
-                var path = Directory.GetCurrentDirectory() + @"\scripts\bus_mod_missions.xml";
-                using (var fS = new FileStream(path, FileMode.Open, FileAccess.Read))
-                {
-                    _xml.Load(fS);
-                    fS.Close();
-                }
-            }
-            catch (Exception)
-            {
-                GTA.UI.Screen.ShowSubtitle("Failed to load missions.xml");
-            }
-        }
-        
-        // Put all passengers here
-        private readonly List<Ped> _ped = new List<Ped>();
-        private Blip _destination;
-        private string _mission = string.Empty;
-        private Vehicle _coach;
+            _missionData = new XmlMissionDataService(missionName);
 
-        // Relationship group
-        private RelationshipGroup _player = 0;
-
-        // Same as above - Used for pedestrians
-        private RelationshipGroup _magic = 0;
-
-        public void PrepareMission(string mission)
-        {
-            _mission = mission;
-            if (_ped.Count > 1)
-            {
-                // Clear the ped list from previous version
-                // When using ped.clear in _check() scripts stop working and got stuck in an infinite loop
-                _ped.Clear(); 
-            }
+            // Clear any previous mission state
+            _pedestrianManager.Clear();
 
             try
             {
-                // Echo description
-                var missionDescription = GetMissionDescription(mission);
-                var descriptionSubtitles = missionDescription.Split('^').ToList();
-                foreach (var t in descriptionSubtitles)
-                {
-                    GTA.UI.Screen.ShowSubtitle(t, 4000);
-                    Script.Wait(4000);
-                }
-                
-                try
-                {
-                    generate_ped(GetPedNumber());
-                    MakePedestriansInvincible();
-                }
-                catch (Exception)
-                {
-                    GTA.UI.Screen.ShowSubtitle("GENERATE_PED_ERROR");
-                }
+                // Display mission description
+                DisplayMissionDescription();
 
-                AddPedestriansBlips();
-                AddDestinationBlip();
-                AddPedBlipSprite(BlipSprite.Friend);
+                // Create and setup pedestrians
+                SetupPedestrians();
 
-                try
-                {
-                    _coach = World.CreateVehicle(new Model(GetVehicleHash("vehicle", 0)),
-                        new Vector3(GetCoordinate("vehicle", 0, 'x'), GetCoordinate("vehicle", 0, 'y'), GetCoordinate("vehicle", 0, 'z')),
-                        GetCoordinate("vehicle", 0, 't'));
-                    _coach.AddBlip();
-                    _coach.AttachedBlip.Sprite = BlipSprite.Cab;
-                    _coach.AttachedBlip.ShowRoute = true;
-                    // To prevent damage and mission auto-cancel before arriving 
-                    _coach.IsInvincible = true; 
-                }
-                catch (Exception)
-                {
-                    GTA.UI.Screen.ShowSubtitle("VEHICLE_ERROR");
-                }
+                // Create vehicle and destination
+                SetupVehicle();
+                SetupDestination();
+
+                // Configure blips and relationships
+                _pedestrianManager.SetBlipSprite(BlipSprite.Friend);
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                GTA.UI.Screen.ShowSubtitle("PREPARE_MISSION_ERROR");
+                GTA.UI.Screen.ShowSubtitle($"PREPARE_MISSION_ERROR: {ex.Message}");
             }
-            AddRelationship();
-
         }
-        
+
+        /// <summary>
+        /// Checks and updates the mission state each game tick.
+        /// Handles passenger pickup, destination arrival, and failure conditions.
+        /// </summary>
+        /// <returns>True if mission is still active, false if completed or failed</returns>
         public bool Check()
         {
             var player = Game.Player.Character;
 
-            // Condition to prevent destruction of vehicle before player uses it
-            if (player.IsInVehicle(_coach))
+            // Make vehicle vulnerable once player enters it
+            if (player.IsInVehicle(_busVehicle))
             {
-                _coach.IsInvincible = false;
+                _busVehicle.IsInvincible = false;
             }
-            
-            // Auto cancel if vehicle is destroyed or some passenger dies
-            if (IsAPassengerDead() || !_coach.IsAlive)
+
+            // Check for failure conditions
+            if (_pedestrianManager.IsAnyDead() || !_busVehicle.IsAlive)
             {
-                CancelMissionDeadPlayerOrPedestrian();
+                HandleMissionFailure();
                 return false;
             }
 
-            // Show route to destination on map
+            // Manage route display based on player location
+            UpdateRouteDisplay(player);
 
-            if (!player.IsInVehicle(_coach))
+            // Handle passenger pickup
+            if (ShouldPickupPassengers())
             {
-                _coach.AttachedBlip.ShowRoute = true;
-                _destination.ShowRoute = false;
-            }
-            else
-            {
-                _coach.AttachedBlip.ShowRoute = false;
-            }
-            
-            if (IsAPassengerOutsideVehicle())
-            {
-                _ped[0].AttachedBlip.ShowRoute = true;
-                _destination.ShowRoute = false;
-            }
-            else
-            {
-                _ped[0].AttachedBlip.ShowRoute = false;
-                _destination.ShowRoute = true;
-            }
-
-            // Driver arrives to pick up pass
-            if (_coach.Position.DistanceTo(_ped[0].Position) <= 30.0 && _coach.IsStopped &&
-                Game.IsControlPressed(Control.VehicleHorn) && _coach.Position.DistanceTo(_destination.Position) >= 50.0)
-            {
-                RemovePedestriansInvincible();
-                foreach (var t in _ped)
-                {
-                    t.SetIntoVehicle(_coach, VehicleSeat.Any);
-                }
-                GTA.UI.Screen.ShowSubtitle("Come on, get in!");
+                PickupPassengers();
                 return true;
             }
 
-            // Driver arrives to destination
-            if (_coach.Position.DistanceTo(_destination.Position) <= 30.0 && _coach.IsStopped &&
-                Game.IsControlPressed(Control.VehicleHorn))
+            // Handle destination arrival
+            if (ShouldCompleteDelivery())
             {
-                // Driver arrives at destination
-                foreach (var t in _ped)
-                {
-                    t.Position = _coach.Position.Around(5);
-                }
-
-                GTA.UI.Screen.ShowSubtitle("Ok we're here. Thanks for using Dashound Bus Center.", 4000);
-
-                _coach.MarkAsNoLongerNeeded();
-                _destination.RemoveNumberLabel();
-                RemovePedestriansBlips();
-                _coach.AttachedBlip.RemoveNumberLabel();
-                _destination.ShowRoute = false;
-                MarkPedestriansAsNoLongerNeeded();
+                CompleteDelivery();
+                return true;
             }
+
             return true;
         }
-        
-        // Reading the XML and creating our ped
-        private void generate_ped(int count)
-        {
-            try
-            {
-                for (var i = 0; i < count; i++)
-                {
-                    _ped.Add(World.CreatePed(
-                        new Model(GetHash("ped", i)),
-                        new GTA.Math.Vector3(GetCoordinate("ped", i, 'x'),
-                            GetCoordinate("ped", i, 'y'),
-                            GetCoordinate("ped", i, 'z')), 
-                        GetCoordinate("ped", i, 't')));
-                }
-            }
-            catch (Exception)
-            {
-                GTA.UI.Screen.ShowSubtitle("GENERATE_PED_ERROR");
-            }
-        }
-        
-        // Check if a passenger is dead
-        private bool IsAPassengerDead()
-        {
-            return _ped.Any(t => !t.IsAlive);
-        }
-        
+
+        /// <summary>
+        /// Cancels the current mission (user-initiated).
+        /// </summary>
         public void CancelMission()
         {
-            GTA.UI.Screen.ShowSubtitle("MISSION CANCELED ALL YOU HAD TO DO WAS TAKE THEM TO THE DAMN DESTINATION!", 8000);
-            RemovePedestriansBlip();
-            CancelMissionInternal();
-        }
-        
-        private void CancelMissionDeadPlayerOrPedestrian()
-        {
-            GTA.UI.Screen.ShowSubtitle("ALL YOU HAD TO DO WAS TAKE THEM TO THE DAMN DESTINATION!", 3500);
-            Script.Wait(3500);
-            GTA.UI.Screen.ShowSubtitle("YOU'RE USELESS AS A CORPSE'S DICK!", 3500);
-            CancelMissionInternal();
+            GTA.UI.Screen.ShowSubtitle(Constants.MissionCanceledMessage, 8000);
+            CleanupMission(applyMoneyPenalty: true);
         }
 
-        private void CancelMissionInternal()
-        {
-            RemovePedestriansBlip();
-            foreach (var t in _ped)
-            {
-                t.Position.Around(3);
-            }
-            Game.Player.Character.Money -= GetMoney();
-            _destination.RemoveNumberLabel();
-            _coach.AttachedBlip.RemoveNumberLabel();
-            _coach.MarkAsNoLongerNeeded();
-            MarkPedestriansAsNoLongerNeeded();
-            _destination.ShowRoute = false;
-        }
-        
-        private void RemovePedestriansBlip()
-        {
-            foreach (var t in _ped)
-            {
-                t.AttachedBlip.RemoveNumberLabel();
-            }
-        }
-        
-        private int GetMoney()
-        {
-            try
-            {
-                var nList = _xml.SelectNodes("/missions/element[name='" + _mission + "']/money");
-                return int.TryParse(nList?[0].InnerText , out var i) ? i : -1;
+        #endregion
 
-            }
-            catch (Exception)
-            {
-                GTA.UI.Screen.ShowSubtitle("GET_MONEY_ERROR");
-                return -1;
-            }
-        }
-        
-        // Bye
-        private void MarkPedestriansAsNoLongerNeeded()
-        {
-            foreach (var t in _ped)
-            {
-                t.MarkAsNoLongerNeeded();
-            }
-        }
-        
-        private bool IsAPassengerOutsideVehicle()
-        {
-            return _ped.Any(t => !t.IsInVehicle(_coach));
-        }
-        
-        // Remove god mod of passengers
-        private void RemovePedestriansInvincible()
-        {
-            foreach (var t in _ped)
-            {
-                t.IsInvincible = false;
-            }
-        }
-        
-        private void RemovePedestriansBlips()
-        {
-            foreach (var t in _ped)
-            {
-                t.AttachedBlip.RemoveNumberLabel();
-            }
-        }
-        
+        #region Setup Methods
+
         /// <summary>
-        /// Get mission description from XML
+        /// Displays the mission description to the player.
         /// </summary>
-        /// <param name="mission"></param>
-        /// <returns></returns>
-        private string GetMissionDescription(string mission)
+        private void DisplayMissionDescription()
+        {
+            var description = _missionData.GetMissionDescription();
+            var descriptionLines = description.Split('^').ToList();
+
+            foreach (var line in descriptionLines)
+            {
+                GTA.UI.Screen.ShowSubtitle(line, Constants.DescriptionDisplayDuration);
+                Script.Wait(Constants.DescriptionDisplayDuration);
+            }
+        }
+
+        /// <summary>
+        /// Creates and configures pedestrians for the mission.
+        /// </summary>
+        private void SetupPedestrians()
         {
             try
             {
-                var desc = _xml.SelectSingleNode("/missions/element[name='" + mission + "']/description");
-                var descStr = desc?.InnerText;
-                return descStr;
+                _pedestrianManager.CreatePedestrians(_missionData);
+                _pedestrianManager.MakeInvincible();
+                _pedestrianManager.AddBlips();
+                _pedestrianManager.SetPlayerRelationship();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                GTA.UI.Screen.ShowSubtitle("GET_DESC_ERROR");
+                GTA.UI.Screen.ShowSubtitle($"GENERATE_PED_ERROR: {ex.Message}");
             }
-            return string.Empty;
         }
-        
+
         /// <summary>
-        /// Get hash from XML
+        /// Creates and configures the bus vehicle for the mission.
         /// </summary>
-        /// <param name="element"></param>
-        /// <param name="index"></param>
-        /// <returns></returns>
-        private int GetHash(string element, int index)
+        private void SetupVehicle()
         {
             try
             {
-                var nList = _xml.SelectNodes("/missions/element[name='" + _mission + "']/" + element + "/hash");
-                return int.TryParse(nList?[index].InnerText, out var n) ? n : -1;
+                _busVehicle = World.CreateVehicle(
+                    new Model(_missionData.GetVehicleHash(0)),
+                    new Vector3(
+                        _missionData.GetCoordinate("vehicle", 0, 'x'),
+                        _missionData.GetCoordinate("vehicle", 0, 'y'),
+                        _missionData.GetCoordinate("vehicle", 0, 'z')
+                    ),
+                    _missionData.GetCoordinate("vehicle", 0, 't')
+                );
+
+                _busVehicle.AddBlip();
+                _busVehicle.AttachedBlip.Sprite = BlipSprite.Cab;
+                _busVehicle.AttachedBlip.ShowRoute = true;
+                
+                // Prevent damage before player reaches vehicle
+                _busVehicle.IsInvincible = true;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                GTA.UI.Screen.ShowSubtitle("GET_HASH_ERROR");
+                GTA.UI.Screen.ShowSubtitle($"VEHICLE_ERROR: {ex.Message}");
             }
-            return -1;
         }
-        
+
         /// <summary>
-        /// Get coordinate from XML
+        /// Creates the destination blip for the mission.
         /// </summary>
-        /// <param name="element"></param>
-        /// <param name="index"></param>
-        /// <param name="coord"></param>
-        /// <returns></returns>
-        private float GetCoordinate(string element, int index, char coord)
+        private void SetupDestination()
         {
             try
             {
-                var nList = _xml.SelectNodes("/missions/element[name='" + _mission + "']/" + element + "/position/" + coord);
-                return float.TryParse(nList?[index].InnerText, out var x) ? x : 100000;;
+                _destinationBlip = World.CreateBlip(
+                    new Vector3(
+                        _missionData.GetCoordinate("destination", 0, 'x'),
+                        _missionData.GetCoordinate("destination", 0, 'y'),
+                        _missionData.GetCoordinate("destination", 0, 'z')
+                    )
+                );
+                _destinationBlip.Color = BlipColor.Blue;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                GTA.UI.Screen.ShowSubtitle("GET_CO_ERROR" + element + " " + index + " " + coord + " ");
+                GTA.UI.Screen.ShowSubtitle($"ADD_DESTINATION_ERROR: {ex.Message}");
             }
-            return 100000;
         }
-        
+
+        #endregion
+
+        #region Mission State Updates
+
         /// <summary>
-        /// Get number of pedestrians from XML
+        /// Updates which route is displayed on the map based on current mission progress.
         /// </summary>
-        /// <returns>Number<see cref="int"/>of pedestrians</returns>
-        private int GetPedNumber()
+        /// <param name="player">The player character</param>
+        private void UpdateRouteDisplay(Ped player)
         {
-            try
+            // Show route to vehicle if player is not in it
+            if (!player.IsInVehicle(_busVehicle))
             {
-                var nList = _xml.SelectNodes("/missions/element[name='" + _mission + "']/ped");
-                return nList?.Count ?? -1;
+                _busVehicle.AttachedBlip.ShowRoute = true;
+                _destinationBlip.ShowRoute = false;
             }
-            catch (Exception)
+            else
             {
-                GTA.UI.Screen.ShowSubtitle("GET_PED_NUMBER_ERROR");
-                return -1;
+                _busVehicle.AttachedBlip.ShowRoute = false;
+            }
+
+            // Show route to first passenger if any are outside vehicle
+            if (_pedestrianManager.IsAnyOutsideVehicle(_busVehicle))
+            {
+                if (_pedestrianManager.FirstPedestrian?.AttachedBlip != null)
+                {
+                    _pedestrianManager.FirstPedestrian.AttachedBlip.ShowRoute = true;
+                }
+                _destinationBlip.ShowRoute = false;
+            }
+            else
+            {
+                if (_pedestrianManager.FirstPedestrian?.AttachedBlip != null)
+                {
+                    _pedestrianManager.FirstPedestrian.AttachedBlip.ShowRoute = false;
+                }
+                _destinationBlip.ShowRoute = true;
             }
         }
-        
+
         /// <summary>
-        /// This is temporary to avoid pedestrians dying before player reaches them 
+        /// Determines if passengers should be picked up based on current conditions.
         /// </summary>
-        private void MakePedestriansInvincible()
+        /// <returns>True if conditions are met for pickup</returns>
+        private bool ShouldPickupPassengers()
         {
-            foreach (var t in _ped)
-            {
-                t.IsInvincible = true;
-            }
+            if (_pedestrianManager.FirstPedestrian == null)
+                return false;
+
+            return _busVehicle.Position.DistanceTo(_pedestrianManager.FirstPedestrian.Position) <= Constants.PickupDistance
+                   && _busVehicle.IsStopped
+                   && Game.IsControlPressed(Control.VehicleHorn)
+                   && _busVehicle.Position.DistanceTo(_destinationBlip.Position) >= Constants.MinDistanceFromDestination;
         }
-        
+
         /// <summary>
-        /// Add blips for pedestrians
+        /// Handles the passenger pickup sequence.
         /// </summary>
-        private void AddPedestriansBlips()
+        private void PickupPassengers()
         {
-            foreach (var t in _ped)
-            {
-                t.AddBlip();
-            }
+            _pedestrianManager.RemoveInvincibility();
+            _pedestrianManager.EnterVehicle(_busVehicle);
+            GTA.UI.Screen.ShowSubtitle(Constants.PassengerPickupMessage);
         }
-        
+
         /// <summary>
-        /// Adding relationship to avoid passenger freaking out
+        /// Determines if the delivery should be completed based on current conditions.
         /// </summary>
-        private void AddRelationship()
+        /// <returns>True if conditions are met for delivery completion</returns>
+        private bool ShouldCompleteDelivery()
         {
-            var playerGroup = Game.Player.Character.RelationshipGroup;
-            foreach (var p in _ped)
-            {
-                p.RelationshipGroup = playerGroup;
-            }
-            playerGroup.SetRelationshipBetweenGroups(playerGroup, Relationship.Respect);
+            return _busVehicle.Position.DistanceTo(_destinationBlip.Position) <= Constants.DestinationDistance
+                   && _busVehicle.IsStopped
+                   && Game.IsControlPressed(Control.VehicleHorn);
         }
-        
-        private void AddDestinationBlip()
+
+        /// <summary>
+        /// Handles the successful delivery of passengers to the destination.
+        /// </summary>
+        private void CompleteDelivery()
         {
-            try
-            {
-                _destination = World.CreateBlip(new Vector3(GetCoordinate("destination", 0, 'x'),
-                    GetCoordinate("destination", 0, 'y'),
-                    GetCoordinate("destination", 0, 'z')));
-                _destination.Color = BlipColor.Blue;
-            }
-            catch (Exception)
-            {
-                GTA.UI.Screen.ShowSubtitle("ADD_DESTINATION_ERROR");
-            }
+            // Exit passengers from vehicle
+            _pedestrianManager.ScatterAround(_busVehicle.Position, Constants.PedestrianExitRadius);
+
+            GTA.UI.Screen.ShowSubtitle(Constants.MissionCompleteMessage, Constants.CompletionMessageDuration);
+
+            CleanupMission(applyMoneyPenalty: false);
         }
-        
-        private void AddPedBlipSprite(in BlipSprite sprite)
+
+        #endregion
+
+        #region Mission Failure and Cleanup
+
+        /// <summary>
+        /// Handles mission failure due to death of passenger or vehicle destruction.
+        /// </summary>
+        private void HandleMissionFailure()
         {
-            foreach (var t in _ped)
-            {
-                t.AttachedBlip.Sprite = sprite;
-            }
+            GTA.UI.Screen.ShowSubtitle(Constants.MissionFailedMessage, Constants.FailureMessageDuration);
+            Script.Wait(Constants.FailureMessageDuration);
+            GTA.UI.Screen.ShowSubtitle(Constants.MissionFailedInsultMessage, Constants.FailureMessageDuration);
+            
+            CleanupMission(applyMoneyPenalty: true);
         }
-        
-        private string GetVehicleHash(string element, int index)
+
+        /// <summary>
+        /// Cleans up mission entities and applies penalties if applicable.
+        /// </summary>
+        /// <param name="applyMoneyPenalty">Whether to apply money penalty for mission failure</param>
+        private void CleanupMission(bool applyMoneyPenalty)
         {
-            try
+            _pedestrianManager.RemoveBlipLabels();
+            _pedestrianManager.ScatterAround(_busVehicle.Position, 3f);
+            _pedestrianManager.MarkAsNoLongerNeeded();
+
+            if (applyMoneyPenalty)
             {
-                var nList = _xml.SelectNodes(@"/missions/element[name='" + _mission + "']/" + element + "/hash");
-                return nList?[index].InnerText ?? "s";
+                var penalty = _missionData.GetMoney();
+                Game.Player.Character.Money -= penalty;
             }
-            catch (Exception)
-            {
-                GTA.UI.Screen.ShowSubtitle("GET_HASH_ERROR");
-            }
-            return "s";
+
+            _destinationBlip.RemoveNumberLabel();
+            _destinationBlip.ShowRoute = false;
+            
+            _busVehicle.AttachedBlip?.RemoveNumberLabel();
+            _busVehicle.MarkAsNoLongerNeeded();
         }
+
+        #endregion
     }
 }
