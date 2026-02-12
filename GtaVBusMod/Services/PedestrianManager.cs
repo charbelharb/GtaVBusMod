@@ -86,13 +86,13 @@ namespace GtaVBusMod.Services
         }
 
         /// <summary>
-        /// Removes number labels from all pedestrian blips.
+        /// Delete blip of all pedestrian blips.
         /// </summary>
-        public void RemoveBlipLabels()
+        public void DeletePedestriansBlip()
         {
             foreach (var ped in _pedestrians)
             {
-                ped.AttachedBlip?.RemoveNumberLabel();
+                ped.AttachedBlip?.Delete();
             }
         }
 

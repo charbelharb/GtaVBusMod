@@ -23,7 +23,7 @@ namespace GtaVBusMod
         private bool _isMissionActive;
         private string _keyCode = string.Empty;
         private readonly Mission _mission = new Mission();
-        private int _currentMissionIndex = 0;
+        private int _currentMissionIndex;
 
         #endregion
 

@@ -52,6 +52,9 @@
         <Compile Include="Properties\AssemblyInfo.cs"/>
         <Compile Include="Services\PedestrianManager.cs" />
         <Compile Include="Services\XmlMissionDataService.cs" />
+        <Compile Include="Tools\DevToolBusLogger.cs" />
+        <Compile Include="Tools\IGtaVBusLogging.cs" />
+        <Compile Include="Tools\NullBusLogger.cs" />
     </ItemGroup>
     <ItemGroup>
       <None Include="packages.config" />

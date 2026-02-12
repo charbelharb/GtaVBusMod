@@ -3,6 +3,7 @@ using System.Linq;
 using GTA;
 using GTA.Math;
 using GtaVBusMod.Services;
+using GtaVBusMod.Tools;
 
 namespace GtaVBusMod
 {
@@ -12,6 +13,19 @@ namespace GtaVBusMod
     /// </summary>
     public class Mission
     {
+
+        public Mission()
+        {
+            if (DebugMode)
+            {
+                _busLogger = new DevToolBusLogger();
+            }
+            else
+            {
+                _busLogger = new NullBusLogger();
+            }
+        }
+        
         #region Fields
 
         private readonly PedestrianManager _pedestrianManager = new PedestrianManager();
@@ -19,6 +33,13 @@ namespace GtaVBusMod
         private Blip _destinationBlip;
         private Vehicle _busVehicle;
 
+        /// <summary>
+        /// Keep this false to avoid getting flooded with UI logs
+        /// </summary>
+        private const bool DebugMode = false;
+
+        private readonly IGtaVBusLogging _busLogger;
+        
         #endregion
 
         #region Mission Lifecycle
@@ -85,14 +106,15 @@ namespace GtaVBusMod
             if (ShouldPickupPassengers())
             {
                 PickupPassengers();
+                _busLogger.Log("Picked up passengers");
                 return true;
             }
 
             // Handle destination arrival
             if (ShouldCompleteDelivery())
             {
+                _busLogger.Log("Delivery Completed");
                 CompleteDelivery();
-                return true;
             }
 
             return true;
@@ -279,9 +301,7 @@ namespace GtaVBusMod
         {
             // Exit passengers from vehicle
             _pedestrianManager.ScatterAround(_busVehicle.Position, Constants.PedestrianExitRadius);
-
             GTA.UI.Screen.ShowSubtitle(Constants.MissionCompleteMessage, Constants.CompletionMessageDuration);
-
             CleanupMission(applyMoneyPenalty: false);
         }
 
@@ -297,7 +317,6 @@ namespace GtaVBusMod
             GTA.UI.Screen.ShowSubtitle(Constants.MissionFailedMessage, Constants.FailureMessageDuration);
             Script.Wait(Constants.FailureMessageDuration);
             GTA.UI.Screen.ShowSubtitle(Constants.MissionFailedInsultMessage, Constants.FailureMessageDuration);
-            
             CleanupMission(applyMoneyPenalty: true);
         }
 
@@ -307,7 +326,7 @@ namespace GtaVBusMod
         /// <param name="applyMoneyPenalty">Whether to apply money penalty for mission failure</param>
         private void CleanupMission(bool applyMoneyPenalty)
         {
-            _pedestrianManager.RemoveBlipLabels();
+            _pedestrianManager.DeletePedestriansBlip();
             _pedestrianManager.ScatterAround(_busVehicle.Position, 3f);
             _pedestrianManager.MarkAsNoLongerNeeded();
 
@@ -317,10 +336,10 @@ namespace GtaVBusMod
                 Game.Player.Character.Money -= penalty;
             }
 
-            _destinationBlip.RemoveNumberLabel();
+            _destinationBlip.Delete();
             _destinationBlip.ShowRoute = false;
             
-            _busVehicle.AttachedBlip?.RemoveNumberLabel();
+            _busVehicle.AttachedBlip?.Delete();
             _busVehicle.MarkAsNoLongerNeeded();
         }
 
