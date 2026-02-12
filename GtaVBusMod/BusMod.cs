@@ -15,8 +15,10 @@ namespace GtaVBusMod
         private readonly List<string> _missionName = new List<string>();
         private NativeMenu main_m;
         private readonly ObjectPool _menuPool = new ObjectPool();
-        private static readonly bool _lock = false;
+        private  bool _lock;
         private string _keycode = string.Empty;
+        private Mission _mission = new Mission();
+        private int _currentMissionIndex = 0;
 
         public BusMod()
         {
@@ -25,6 +27,10 @@ namespace GtaVBusMod
             Tick += (o, e) => {
                
                 _menuPool.Process();
+                if (_lock)
+                {
+                    _lock = _mission.Check();
+                };
             };
 
             KeyDown += (o, e) =>
@@ -50,7 +56,6 @@ namespace GtaVBusMod
                     var xmlDoc = new XmlDocument();
                     xmlDoc.Load(fS);
                     var nList = xmlDoc.SelectNodes("/missions/element/name");
-                    Debug.Assert(nList != null, nameof(nList) + " != null");
                     _missionName.AddRange(from XmlNode node in nList select node.InnerText);
                     fS.Close();
                 }
@@ -65,17 +70,18 @@ namespace GtaVBusMod
         
         private string GetKey()
         {
-            if (_keycode != string.Empty)
+            if (!string.IsNullOrWhiteSpace(_keycode))
             {
                 return _keycode;
             }
-            var key = "";
+            var split = new string[] { };
             const string path = @"scripts\\bus_mod.ini";
             try
             {
                 using (var r = new StreamReader(path))
                 {
-                    key = r.ReadLine();
+                    var key = r.ReadLine();
+                    split = key?.Split('=');
                     r.Close();
                 }
             }
@@ -83,9 +89,7 @@ namespace GtaVBusMod
             {
                 GTA.UI.Screen.ShowSubtitle(e.Message);
             }
-            Debug.Assert(key != null, nameof(key) + " != null");
-            var split = key.Split('=');
-            _keycode = split[1];
+            _keycode = split?[1];
             return _keycode;
         }
         
@@ -101,10 +105,13 @@ namespace GtaVBusMod
             _menuPool.Add(main_m);
             var missionName = GetMissionName();
             var startBut = new NativeItem("Start", "Click to start mission.");
+            main_m.BannerText.Text = "Dashound Bus Center";
             main_m.Add(startBut);
             startBut.Activated += (sender, args) =>
             {
-                GTA.UI.Screen.ShowSubtitle("Start mission");
+                _lock = true;
+                _menuPool.HideAll();
+                _mission.PrepareMission(_missionName[_currentMissionIndex]);
             };
             var missionList = new NativeListItem<string>("Missions List",  "Choose mission")
             {
@@ -113,13 +120,19 @@ namespace GtaVBusMod
             main_m.Add(missionList);
             missionList.ItemChanged += (sender, args) =>
             {
-                GTA.UI.Screen.ShowSubtitle("Mission List Changed");
+                _currentMissionIndex = args.Index;
             };
             var cancel = new NativeItem("Cancel", "Cancel current mission")
             {
                 Enabled = false
             };
             main_m.Add(cancel);
+            cancel.Activated += (sender, args) =>
+            {
+                _menuPool.HideAll();
+                _mission.CancelMission();
+                _lock = false;
+            };
             if (_lock)
             {
                 startBut.Enabled = false;
