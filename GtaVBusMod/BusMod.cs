@@ -36,8 +36,8 @@ namespace GtaVBusMod
         public BusMod()
         {
             Interval = 0;
-            GTA.UI.Notification.Show("Bus mod loaded - scorz");
-
+            GTA.UI.Notification.Show(Constants.ModLoadedMessage);
+            
             // Process menu pool and mission state on each tick
             Tick += (o, e) =>
             {

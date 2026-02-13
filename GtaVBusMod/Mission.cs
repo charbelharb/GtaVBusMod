@@ -34,7 +34,7 @@ namespace GtaVBusMod
         private Vehicle _busVehicle;
 
         /// <summary>
-        /// Keep this false to avoid getting flooded with UI logs
+        /// If true, it will log to a BusModGtaV.log
         /// </summary>
         private const bool DebugMode = false;
 
@@ -93,8 +93,13 @@ namespace GtaVBusMod
             }
 
             // Check for failure conditions
-            if (_pedestrianManager.IsAnyDead() || !_busVehicle.IsAlive)
+            var anyPedIsDead = _pedestrianManager.IsAnyDead();
+            var vehicleAlive = _busVehicle.IsAlive;
+            if (anyPedIsDead || !vehicleAlive)
             {
+                _busLogger.Log("Mission failure");
+                _busLogger.Log($"Ped dead: {anyPedIsDead.ToString()}");
+                _busLogger.Log($"Vehicle Alive: {vehicleAlive.ToString()}");
                 HandleMissionFailure();
                 return false;
             }
@@ -115,6 +120,7 @@ namespace GtaVBusMod
             {
                 _busLogger.Log("Delivery Completed");
                 CompleteDelivery();
+                return false;
             }
 
             return true;
@@ -233,28 +239,22 @@ namespace GtaVBusMod
             {
                 _busVehicle.AttachedBlip.ShowRoute = true;
                 _destinationBlip.ShowRoute = false;
+                _pedestrianManager.FirstPedestrian.AttachedBlip.ShowRoute = false;
             }
             else
             {
                 _busVehicle.AttachedBlip.ShowRoute = false;
-            }
-
-            // Show route to first passenger if any are outside vehicle
-            if (_pedestrianManager.IsAnyOutsideVehicle(_busVehicle))
-            {
-                if (_pedestrianManager.FirstPedestrian?.AttachedBlip != null)
+                // Show route to first passenger if any are outside vehicle
+                if (_pedestrianManager.IsAnyOutsideVehicle(_busVehicle))
                 {
                     _pedestrianManager.FirstPedestrian.AttachedBlip.ShowRoute = true;
+                    _destinationBlip.ShowRoute = false;
                 }
-                _destinationBlip.ShowRoute = false;
-            }
-            else
-            {
-                if (_pedestrianManager.FirstPedestrian?.AttachedBlip != null)
+                else
                 {
                     _pedestrianManager.FirstPedestrian.AttachedBlip.ShowRoute = false;
+                    _destinationBlip.ShowRoute = true;
                 }
-                _destinationBlip.ShowRoute = true;
             }
         }
 
@@ -337,9 +337,7 @@ namespace GtaVBusMod
             }
 
             _destinationBlip.Delete();
-            _destinationBlip.ShowRoute = false;
-            
-            _busVehicle.AttachedBlip?.Delete();
+            _busVehicle.AttachedBlip.Delete();
             _busVehicle.MarkAsNoLongerNeeded();
         }
 
